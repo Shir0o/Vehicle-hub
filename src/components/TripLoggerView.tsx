@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   CheckCircle2,
   AlertCircle,
@@ -19,6 +19,13 @@ interface TripLoggerViewProps {
   lastTripEndOdometer?: number;
   onSaveTrip: (trip: Omit<Trip, 'id' | 'createdAt'>) => void;
   onDone?: () => void;
+}
+
+interface TripFormErrors {
+  destination?: string;
+  startOdo?: string;
+  endOdo?: string;
+  businessPurpose?: string;
 }
 
 const PURPOSE_PRESETS = [
@@ -49,6 +56,29 @@ export const TripLoggerView: React.FC<TripLoggerViewProps> = ({
   const [tollsAndParking, setTollsAndParking] = useState<number>(0);
   const [notes, setNotes] = useState<string>('');
   const [successMsg, setSuccessMsg] = useState<string>('');
+  const [errors, setErrors] = useState<TripFormErrors>({});
+
+  const destinationRef = useRef<HTMLInputElement>(null);
+  const startOdoRef = useRef<HTMLInputElement>(null);
+  const endOdoRef = useRef<HTMLInputElement>(null);
+  const businessPurposeRef = useRef<HTMLTextAreaElement>(null);
+  const successTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Clear the success-toast timeout if the view unmounts mid-message.
+  useEffect(() => {
+    return () => {
+      if (successTimerRef.current) clearTimeout(successTimerRef.current);
+    };
+  }, []);
+
+  const clearError = (field: keyof TripFormErrors) => {
+    setErrors((prev) => {
+      if (!prev[field]) return prev;
+      const next = { ...prev };
+      delete next[field];
+      return next;
+    });
+  };
 
   const tripYear = parseInt(date.split('-')[0], 10) || new Date().getFullYear();
   const rate = getStandardMileageRate(tripYear);
@@ -57,16 +87,27 @@ export const TripLoggerView: React.FC<TripLoggerViewProps> = ({
   const handleStartChange = (val: number) => {
     setStartOdo(val);
     setDistance(Math.max(0, endOdo - val));
+    clearError('startOdo');
+    clearError('endOdo');
   };
 
   const handleEndChange = (val: number) => {
     setEndOdo(val);
     setDistance(Math.max(0, val - startOdo));
+    clearError('startOdo');
+    clearError('endOdo');
   };
 
   const handleDistanceChange = (val: number) => {
     setDistance(val);
     setEndOdo(startOdo + val);
+    clearError('startOdo');
+    clearError('endOdo');
+  };
+
+  const handleCategoryChange = (cat: TripCategory) => {
+    setCategory(cat);
+    if (cat !== 'BUSINESS') clearError('businessPurpose');
   };
 
   // Statutory IRC § 274 Check
@@ -81,14 +122,37 @@ export const TripLoggerView: React.FC<TripLoggerViewProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+
+    const nextErrors: TripFormErrors = {};
     if (!destination.trim()) {
-      alert('Please enter a destination.');
+      nextErrors.destination = 'Please enter a destination.';
+    }
+    if (startOdo <= 0) {
+      nextErrors.startOdo = 'Start odometer must be greater than 0.';
+    }
+    if (endOdo < startOdo) {
+      nextErrors.endOdo = 'End odometer must be greater than or equal to the start odometer.';
+    }
+    if (isBusiness && businessPurpose.trim().length < 5) {
+      nextErrors.businessPurpose =
+        'IRC § 274 requires an explicit business purpose (at least 5 characters) for business mileage deductions.';
+    }
+
+    if (Object.keys(nextErrors).length > 0) {
+      setErrors(nextErrors);
+      if (nextErrors.destination) {
+        destinationRef.current?.focus();
+      } else if (nextErrors.startOdo) {
+        startOdoRef.current?.focus();
+      } else if (nextErrors.endOdo) {
+        endOdoRef.current?.focus();
+      } else if (nextErrors.businessPurpose) {
+        businessPurposeRef.current?.focus();
+      }
       return;
     }
-    if (isBusiness && !businessPurpose.trim()) {
-      alert('IRC § 274 requires an explicit business purpose for business mileage deductions.');
-      return;
-    }
+
+    setErrors({});
 
     onSaveTrip({
       date,
@@ -102,9 +166,11 @@ export const TripLoggerView: React.FC<TripLoggerViewProps> = ({
       notes: notes.trim(),
     });
 
-    setSuccessMsg(`Logged trip of ${distance} miles to ${destination}!`);
-    setTimeout(() => {
+    setSuccessMsg(`Logged trip of ${distance} miles to ${destination.trim()}!`);
+    if (successTimerRef.current) clearTimeout(successTimerRef.current);
+    successTimerRef.current = setTimeout(() => {
       setSuccessMsg('');
+      successTimerRef.current = null;
       if (onDone) onDone();
     }, 1500);
 
@@ -123,7 +189,7 @@ export const TripLoggerView: React.FC<TripLoggerViewProps> = ({
       {/* Title & Statutory Header */}
       <div className="space-y-1">
         <div className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600/15 px-2.5 py-1 text-xs font-semibold text-blue-400 border border-blue-500/30">
-          <FileCheck className="w-4 h-4" /> IRC § 274(d) Contemporaneous Mileage Log
+          <FileCheck className="w-4 h-4" aria-hidden="true" /> IRC § 274(d) Contemporaneous Mileage Log
         </div>
         <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-100">
           Record New Trip
@@ -133,19 +199,21 @@ export const TripLoggerView: React.FC<TripLoggerViewProps> = ({
         </p>
       </div>
 
-      {successMsg && (
-        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/15 p-3 text-xs font-semibold text-emerald-300 flex items-center gap-2">
-          <CheckCircle2 className="w-4 h-4 shrink-0" />
-          {successMsg}
-        </div>
-      )}
+      <div role="status" aria-live="polite" aria-atomic="true">
+        {successMsg && (
+          <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/15 p-3 text-xs font-semibold text-emerald-300 flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 shrink-0" aria-hidden="true" />
+            {successMsg}
+          </div>
+        )}
+      </div>
 
-      <form onSubmit={handleSubmit} className="space-y-5 rounded-3xl border border-slate-800 bg-slate-900/70 p-5 sm:p-6 shadow-xl backdrop-blur-md">
+      <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-5 rounded-3xl border border-slate-800 bg-slate-900/70 p-5 sm:p-6 shadow-xl backdrop-blur-md">
         {/* Category Pill Selector */}
-        <div>
-          <label className="block text-xs font-medium text-slate-300 mb-2">
+        <fieldset className="border-0 p-0 min-w-0">
+          <legend className="block text-xs font-medium text-slate-300 mb-2">
             Trip Classification
-          </label>
+          </legend>
           <div className="grid grid-cols-3 gap-2">
             {(['BUSINESS', 'COMMUTE', 'PERSONAL'] as TripCategory[]).map((cat) => {
               const isSelected = category === cat;
@@ -153,8 +221,9 @@ export const TripLoggerView: React.FC<TripLoggerViewProps> = ({
                 <button
                   type="button"
                   key={cat}
-                  onClick={() => setCategory(cat)}
-                  className={`rounded-xl py-2.5 px-3 text-xs font-semibold transition-all flex flex-col items-center justify-center gap-0.5 border ${
+                  onClick={() => handleCategoryChange(cat)}
+                  aria-pressed={isSelected}
+                  className={`rounded-xl py-2.5 px-3 text-xs font-semibold transition-all flex flex-col items-center justify-center gap-0.5 border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
                     isSelected
                       ? cat === 'BUSINESS'
                         ? 'border-blue-500 bg-blue-600/20 text-blue-300 shadow-sm'
@@ -176,37 +245,56 @@ export const TripLoggerView: React.FC<TripLoggerViewProps> = ({
               );
             })}
           </div>
-        </div>
+        </fieldset>
 
         {/* Date and Destination */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1">
+            <label
+              htmlFor="trip-date"
+              className="block text-xs font-medium text-slate-300 mb-1"
+            >
               Date
             </label>
             <input
+              id="trip-date"
               type="date"
               value={date}
               onChange={(e) => setDate(e.target.value)}
-              className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 focus:border-blue-500 focus:outline-hidden"
+              className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 focus:border-blue-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
               required
             />
           </div>
           <div className="sm:col-span-2">
-            <label className="block text-xs font-medium text-slate-300 mb-1">
+            <label
+              htmlFor="trip-destination"
+              className="block text-xs font-medium text-slate-300 mb-1"
+            >
               Destination & Location (Name / Address)
             </label>
             <div className="relative">
-              <MapPin className="w-4 h-4 absolute left-3 top-2.5 text-slate-500" />
+              <MapPin className="w-4 h-4 absolute left-3 top-2.5 text-slate-500" aria-hidden="true" />
               <input
+                id="trip-destination"
+                ref={destinationRef}
                 type="text"
                 placeholder="e.g. Acme Corp, San Jose / Office Depot, Sunnyvale"
                 value={destination}
-                onChange={(e) => setDestination(e.target.value)}
-                className="w-full rounded-xl border border-slate-700 bg-slate-950 pl-9 pr-3 py-2 text-sm text-slate-200 placeholder:text-slate-600 focus:border-blue-500 focus:outline-hidden"
+                onChange={(e) => {
+                  setDestination(e.target.value);
+                  clearError('destination');
+                }}
+                aria-invalid={Boolean(errors.destination)}
+                aria-describedby={errors.destination ? 'trip-destination-error' : undefined}
+                className="w-full rounded-xl border border-slate-700 bg-slate-950 pl-9 pr-3 py-2 text-sm text-slate-200 placeholder:text-slate-600 focus:border-blue-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                 required
               />
             </div>
+            {errors.destination && (
+              <p id="trip-destination-error" role="alert" className="mt-1 text-xs text-rose-400">
+                {errors.destination}
+              </p>
+            )}
           </div>
         </div>
 
@@ -214,7 +302,7 @@ export const TripLoggerView: React.FC<TripLoggerViewProps> = ({
         <div className="rounded-2xl border border-slate-800/80 bg-slate-950/60 p-4 space-y-3">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
-              <Car className="w-4 h-4 text-blue-400" />
+              <Car className="w-4 h-4 text-blue-400" aria-hidden="true" />
               Contemporaneous Odometer Readings
             </span>
             <span className="text-[11px] text-slate-400">
@@ -222,46 +310,74 @@ export const TripLoggerView: React.FC<TripLoggerViewProps> = ({
             </span>
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
-              <label className="block text-[11px] font-medium text-slate-400 mb-1">
+              <label
+                htmlFor="trip-start-odometer"
+                className="block text-[11px] font-medium text-slate-400 mb-1"
+              >
                 Start Odometer
               </label>
               <input
+                id="trip-start-odometer"
+                ref={startOdoRef}
                 type="number"
                 value={startOdo}
                 onChange={(e) => handleStartChange(parseInt(e.target.value, 10) || 0)}
-                className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-blue-500 focus:outline-hidden"
+                aria-invalid={Boolean(errors.startOdo)}
+                aria-describedby={errors.startOdo ? 'trip-start-odometer-error' : undefined}
+                className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-blue-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                 required
               />
+              {errors.startOdo && (
+                <p id="trip-start-odometer-error" role="alert" className="mt-1 text-xs text-rose-400">
+                  {errors.startOdo}
+                </p>
+              )}
             </div>
 
             <div>
-              <label className="block text-[11px] font-medium text-slate-400 mb-1">
+              <label
+                htmlFor="trip-end-odometer"
+                className="block text-[11px] font-medium text-slate-400 mb-1"
+              >
                 End Odometer
               </label>
               <input
+                id="trip-end-odometer"
+                ref={endOdoRef}
                 type="number"
                 value={endOdo}
                 onChange={(e) => handleEndChange(parseInt(e.target.value, 10) || 0)}
-                className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-blue-500 focus:outline-hidden"
+                aria-invalid={Boolean(errors.endOdo)}
+                aria-describedby={errors.endOdo ? 'trip-end-odometer-error' : undefined}
+                className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm text-slate-100 focus:border-blue-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                 required
               />
+              {errors.endOdo && (
+                <p id="trip-end-odometer-error" role="alert" className="mt-1 text-xs text-rose-400">
+                  {errors.endOdo}
+                </p>
+              )}
             </div>
 
             <div>
-              <label className="block text-[11px] font-medium text-slate-400 mb-1">
+              <label
+                htmlFor="trip-distance"
+                className="block text-[11px] font-medium text-slate-400 mb-1"
+              >
                 Trip Distance
               </label>
               <div className="relative">
                 <input
+                  id="trip-distance"
                   type="number"
                   value={distance}
                   onChange={(e) => handleDistanceChange(parseInt(e.target.value, 10) || 0)}
-                  className="w-full rounded-xl border border-blue-500/50 bg-blue-950/20 px-3 py-2 font-mono text-sm font-bold text-blue-300 focus:border-blue-500 focus:outline-hidden"
+                  className="w-full rounded-xl border border-blue-500/50 bg-blue-950/20 px-3 py-2 font-mono text-sm font-bold text-blue-300 focus:border-blue-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                   required
                 />
-                <span className="absolute right-2.5 top-2 text-xs font-mono text-blue-400">
+                <span className="absolute right-2.5 top-2 text-xs font-mono text-blue-400" aria-hidden="true">
                   mi
                 </span>
               </div>
@@ -273,21 +389,36 @@ export const TripLoggerView: React.FC<TripLoggerViewProps> = ({
         {isBusiness && (
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <label className="text-xs font-medium text-slate-300 flex items-center gap-1.5">
-                <Tag className="w-3.5 h-3.5 text-blue-400" />
+              <label
+                htmlFor="trip-business-purpose"
+                className="text-xs font-medium text-slate-300 flex items-center gap-1.5"
+              >
+                <Tag className="w-3.5 h-3.5 text-blue-400" aria-hidden="true" />
                 Specific Business Purpose (IRC § 274 Audit Requirement)
               </label>
               <span className="text-[10px] text-amber-400">Required for deduction</span>
             </div>
 
             <textarea
+              id="trip-business-purpose"
+              ref={businessPurposeRef}
               rows={2}
               placeholder="Describe business reason (e.g., Client site technical consultation, hardware staging setup)..."
               value={businessPurpose}
-              onChange={(e) => setBusinessPurpose(e.target.value)}
-              className="w-full rounded-xl border border-slate-700 bg-slate-950 p-3 text-xs text-slate-200 placeholder:text-slate-600 focus:border-blue-500 focus:outline-hidden"
+              onChange={(e) => {
+                setBusinessPurpose(e.target.value);
+                clearError('businessPurpose');
+              }}
+              aria-invalid={Boolean(errors.businessPurpose)}
+              aria-describedby={errors.businessPurpose ? 'trip-business-purpose-error' : undefined}
+              className="w-full rounded-xl border border-slate-700 bg-slate-950 p-3 text-xs text-slate-200 placeholder:text-slate-600 focus:border-blue-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
               required={isBusiness}
             />
+            {errors.businessPurpose && (
+              <p id="trip-business-purpose-error" role="alert" className="text-xs text-rose-400">
+                {errors.businessPurpose}
+              </p>
+            )}
 
             {/* Quick Presets */}
             <div className="space-y-1">
@@ -299,8 +430,14 @@ export const TripLoggerView: React.FC<TripLoggerViewProps> = ({
                   <button
                     type="button"
                     key={preset}
-                    onClick={() => setBusinessPurpose(preset)}
-                    className="rounded-lg border border-slate-800 bg-slate-950/60 px-2 py-1 text-[10px] text-slate-300 hover:border-slate-700 hover:bg-slate-800 transition-colors"
+                    onClick={() => {
+                      setBusinessPurpose(preset);
+                      clearError('businessPurpose');
+                    }}
+                    aria-pressed={businessPurpose === preset}
+                    aria-label={preset}
+                    title={preset}
+                    className="rounded-lg border border-slate-800 bg-slate-950/60 px-2 py-1 text-[10px] text-slate-300 hover:border-slate-700 hover:bg-slate-800 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                   >
                     + {preset.length > 32 ? preset.substring(0, 32) + '...' : preset}
                   </button>
@@ -313,19 +450,23 @@ export const TripLoggerView: React.FC<TripLoggerViewProps> = ({
         {/* Tolls & Parking (Separate 100% deduction under IRC § 274) */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1">
+            <label
+              htmlFor="trip-tolls-parking"
+              className="block text-xs font-medium text-slate-300 mb-1"
+            >
               Tolls & Parking ($ USD)
             </label>
             <div className="relative">
-              <DollarSign className="w-4 h-4 absolute left-3 top-2.5 text-slate-500" />
+              <DollarSign className="w-4 h-4 absolute left-3 top-2.5 text-slate-500" aria-hidden="true" />
               <input
+                id="trip-tolls-parking"
                 type="number"
                 step="0.01"
                 min="0"
                 placeholder="0.00"
                 value={tollsAndParking || ''}
                 onChange={(e) => setTollsAndParking(parseFloat(e.target.value) || 0)}
-                className="w-full rounded-xl border border-slate-700 bg-slate-950 pl-8 pr-3 py-2 text-sm font-mono text-slate-200 placeholder:text-slate-600 focus:border-blue-500 focus:outline-hidden"
+                className="w-full rounded-xl border border-slate-700 bg-slate-950 pl-8 pr-3 py-2 text-sm font-mono text-slate-200 placeholder:text-slate-600 focus:border-blue-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
               />
             </div>
             <p className="mt-1 text-[10px] text-slate-400">
@@ -334,15 +475,19 @@ export const TripLoggerView: React.FC<TripLoggerViewProps> = ({
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-slate-300 mb-1">
+            <label
+              htmlFor="trip-notes"
+              className="block text-xs font-medium text-slate-300 mb-1"
+            >
               Notes (Optional)
             </label>
             <input
+              id="trip-notes"
               type="text"
               placeholder="e.g. Bay Bridge fastrak, garage receipt"
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600 focus:border-blue-500 focus:outline-hidden"
+              className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600 focus:border-blue-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
             />
           </div>
         </div>
@@ -355,7 +500,12 @@ export const TripLoggerView: React.FC<TripLoggerViewProps> = ({
                 ? 'border-emerald-500/30 bg-emerald-500/15 text-emerald-400'
                 : 'border-amber-500/30 bg-amber-500/15 text-amber-400'
             }`}>
-              {isCompliant ? <CheckCircle2 className="w-5 h-5" /> : <AlertCircle className="w-5 h-5" />}
+              {isCompliant ? (
+                <CheckCircle2 className="w-5 h-5" aria-hidden="true" />
+              ) : (
+                <AlertCircle className="w-5 h-5" aria-hidden="true" />
+              )}
+
             </div>
             <div>
               <div className="text-xs font-semibold text-slate-200">
@@ -387,9 +537,9 @@ export const TripLoggerView: React.FC<TripLoggerViewProps> = ({
         {/* Submit Button */}
         <button
           type="submit"
-          className="w-full rounded-2xl bg-blue-600 py-3 px-4 font-semibold text-sm text-white shadow-lg shadow-blue-600/30 hover:bg-blue-500 active:scale-[0.99] transition-all flex items-center justify-center gap-2"
+          className="w-full rounded-2xl bg-blue-600 py-3 px-4 font-semibold text-sm text-white shadow-lg shadow-blue-600/30 hover:bg-blue-500 active:scale-[0.99] transition-all flex items-center justify-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
         >
-          <Plus className="w-4 h-4" /> Save & Contemporaneously Log Trip
+          <Plus className="w-4 h-4" aria-hidden="true" /> Save & Contemporaneously Log Trip
         </button>
       </form>
     </div>
